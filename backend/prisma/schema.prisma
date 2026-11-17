@@ -1,0 +1,630 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Personal-loan / Motorcycle-loan quotation platform — PostgreSQL
+//
+// Design notes
+//  * One shared quotation workflow. Product differences live in the `Product`
+//    catalog (rules) and in product-specific detail tables (e.g. VehicleDetail).
+//  * Legacy Oracle MOBILEMPLS.* tables are normalised:
+//      MPLS_QUOTATION  -> loan_quotations + applicants + quotation_addresses/addresses
+//      MPLS_CREDIT     -> loan_requests + vehicle_details + quotation_insurances
+//      MPLS_CAREER     -> occupations (MAIN/SUB) + bank_accounts
+//      purpose/referral table -> loan_requests (purpose) + quotation_persons
+//      image table (BLOB)     -> quotation_documents (file on server, metadata in DB)
+//      MPLS_CONSENT    -> consent_definitions + consent_records (+ signature_verifications)
+//  * Cross-module references are by ID only, so a module (auth, catalog,
+//    quotations, documents, consents) can be extracted into a service later.
+//  * Domain events are written to `outbox_events` in the same transaction.
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enums ────────────────────────────────────────────────────────────────────
+
+enum UserStatus {
+  ACTIVE
+  LOCKED
+  DISABLED
+}
+
+/// Placeholder role model; replace with full RBAC tables when needed.
+enum UserRole {
+  CUSTOMER
+  STORE // legacy CHANNAL_TYPE 'S'
+  CHECKER // legacy CHANNAL_TYPE 'C'
+  CA_AGENT
+  ADMIN
+}
+
+enum ProductType {
+  PERSONAL_LOAN
+  MOTORCYCLE_LOAN
+}
+
+enum QuotationStatus {
+  DRAFT
+  SUBMITTED
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  CANCELLED
+  EXPIRED
+}
+
+/// Legacy IS_SLB_CHANNAL: Y = slb, N = web102.
+enum SourceChannel {
+  MOBILE_APP
+  WEB102
+  SLB
+}
+
+enum IdentityType {
+  CITIZEN_ID
+  PASSPORT
+}
+
+enum AddressKind {
+  ID_CARD
+  LIVING
+  CONTACT
+  WORKING
+}
+
+enum OccupationKind {
+  MAIN
+  SUB
+}
+
+enum PersonRole {
+  VEHICLE_USER
+  REFERRAL_1
+  REFERRAL_2
+}
+
+enum DocumentStatus {
+  ACTIVE
+  CANCELLED
+}
+
+enum ScanStatus {
+  PENDING
+  CLEAN
+  INFECTED
+  SKIPPED
+}
+
+enum ConsentCategory {
+  PDPA // customer data-protection consents
+  STAFF_CHECKLIST // legacy IS_CHECK_* (staff explained X to customer)
+  SERVICE // e-contract / e-bill etc.
+}
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  email        String     @unique @db.VarChar(255)
+  passwordHash String     @map("password_hash") @db.VarChar(255)
+  firstName    String     @map("first_name") @db.VarChar(100)
+  lastName     String     @map("last_name") @db.VarChar(100)
+  role         UserRole   @default(CUSTOMER)
+  /// Legacy SL_CODE (dealer / store code) for STORE users.
+  dealerCode   String?    @map("dealer_code") @db.VarChar(30)
+  /// Legacy CHECKER_CODE for CHECKER users.
+  checkerCode  String?    @map("checker_code") @db.VarChar(30)
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  deletedAt    DateTime?  @map("deleted_at")
+
+  sessions   Session[]
+  quotations LoanQuotation[]
+
+  @@map("users")
+}
+
+model Session {
+  id               String    @id @default(uuid()) @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  refreshTokenHash String?   @map("refresh_token_hash") @db.VarChar(255)
+  expiresAt        DateTime  @map("expires_at")
+  revokedAt        DateTime? @map("revoked_at")
+  ipAddress        String?   @map("ip_address") @db.VarChar(64)
+  userAgent        String?   @map("user_agent") @db.VarChar(500)
+  createdAt        DateTime  @default(now()) @map("created_at")
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+// ── Catalog / master data (product layer) ───────────────────────────────────
+
+model Product {
+  id             String      @id @default(uuid()) @db.Uuid
+  /// Stable business code, e.g. PERSONAL_LOAN, MOTORCYCLE_LOAN (legacy BUSSINESS_CODE).
+  code           String      @unique @db.VarChar(50)
+  type           ProductType
+  name           String      @db.VarChar(200)
+  isActive       Boolean     @default(true) @map("is_active")
+  minAmount      Decimal?    @map("min_amount") @db.Decimal(14, 2)
+  maxAmount      Decimal?    @map("max_amount") @db.Decimal(14, 2)
+  minTermMonths  Int?        @map("min_term_months")
+  maxTermMonths  Int?        @map("max_term_months")
+  /// Product-specific rules (max LTV, min down-payment %, allowed terms, ...).
+  rules          Json?
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  documentRequirements ProductDocumentRequirement[]
+  consentRequirements  ProductConsentRequirement[]
+  quotations           LoanQuotation[]
+
+  @@map("products")
+}
+
+model DocumentType {
+  /// Legacy IMAGE_CODE (4 chars) is kept as the business code.
+  code      String   @id @db.VarChar(20)
+  name      String   @db.VarChar(200)
+  isActive  Boolean  @default(true) @map("is_active")
+  sortOrder Int      @default(0) @map("sort_order")
+
+  requirements ProductDocumentRequirement[]
+  documents    QuotationDocument[]
+
+  @@map("document_types")
+}
+
+model ProductDocumentRequirement {
+  productId        String  @map("product_id") @db.Uuid
+  documentTypeCode String  @map("document_type_code") @db.VarChar(20)
+  isRequired       Boolean @default(true) @map("is_required")
+  maxFiles         Int     @default(1) @map("max_files")
+
+  product      Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  documentType DocumentType @relation(fields: [documentTypeCode], references: [code])
+
+  @@id([productId, documentTypeCode])
+  @@map("product_document_requirements")
+}
+
+model ConsentDefinition {
+  code      String          @db.VarChar(60)
+  version   String          @db.VarChar(30)
+  category  ConsentCategory
+  title     String          @db.VarChar(300)
+  /// Full legal wording. Must be reviewed and versioned by legal before production.
+  body      String?         @db.Text
+  isActive  Boolean         @default(true) @map("is_active")
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  requirements ProductConsentRequirement[]
+  records      ConsentRecord[]
+
+  @@id([code, version])
+  @@map("consent_definitions")
+}
+
+model ProductConsentRequirement {
+  productId      String  @map("product_id") @db.Uuid
+  consentCode    String  @map("consent_code") @db.VarChar(60)
+  consentVersion String  @map("consent_version") @db.VarChar(30)
+  /// Must be accepted before the quotation can be submitted.
+  isMandatory    Boolean @default(false) @map("is_mandatory")
+
+  product    Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  definition ConsentDefinition @relation(fields: [consentCode, consentVersion], references: [code, version])
+
+  @@id([productId, consentCode, consentVersion])
+  @@map("product_consent_requirements")
+}
+
+// ── Quotation aggregate ─────────────────────────────────────────────────────
+
+model LoanQuotation {
+  id          String          @id @default(uuid()) @db.Uuid
+  /// Human-readable running number (legacy QUO_ID, generated by trigger).
+  quotationNo Int             @unique @default(autoincrement()) @map("quotation_no")
+  userId      String          @map("user_id") @db.Uuid
+  productId   String          @map("product_id") @db.Uuid
+  status      QuotationStatus @default(DRAFT)
+  channel     SourceChannel   @default(MOBILE_APP)
+  /// Legacy SL_CODE / CHECKER_CODE captured at creation time.
+  dealerCode  String?         @map("dealer_code") @db.VarChar(30)
+  checkerCode String?         @map("checker_code") @db.VarChar(30)
+  clientVersion String?       @map("client_version") @db.VarChar(30)
+
+  // Links to downstream hire-purchase system (legacy APPLICATION_NUM, CONTRACT_NO, ...)
+  applicationNo  String? @map("application_no") @db.VarChar(30)
+  appRefNo       String? @map("app_ref_no") @db.VarChar(50)
+  contractNo     String? @map("contract_no") @db.VarChar(30)
+  /// Legacy LOAN_RESULT: status returned by the hire-purchase system.
+  externalResult String? @map("external_result") @db.VarChar(50)
+
+  // Back-office assignment (legacy CA_AGENT_ASSIGNED_*)
+  assignedAgentId String?   @map("assigned_agent_id") @db.Uuid
+  assignedStartAt DateTime? @map("assigned_start_at")
+  assignedEndAt   DateTime? @map("assigned_end_at")
+
+  // e-document / notification flags (legacy SMS_SEND_STATUS, E_PAPER, E_DOC_STATUS)
+  smsSendStatus Boolean @default(false) @map("sms_send_status")
+  ePaper        Boolean @default(false) @map("e_paper")
+  eDocStatus    String? @map("e_doc_status") @db.VarChar(20)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  submittedAt DateTime? @map("submitted_at")
+  approvedAt  DateTime? @map("approved_at")
+  deletedAt   DateTime? @map("deleted_at")
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Restrict)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  applicant     Applicant?
+  loanRequest   LoanRequest?
+  vehicle       VehicleDetail?
+  insurance     QuotationInsurance?
+  bankAccount   BankAccount?
+  signature     SignatureVerification?
+  addresses     QuotationAddress[]
+  occupations   Occupation[]
+  persons       QuotationPerson[]
+  documents     QuotationDocument[]
+  consents      ConsentRecord[]
+  faceChecks    FaceVerification[]
+  statusHistory QuotationStatusHistory[]
+
+  @@index([userId, status, createdAt])
+  @@index([productId, status])
+  @@index([dealerCode])
+  @@index([applicationNo])
+  @@map("loan_quotations")
+}
+
+model QuotationStatusHistory {
+  id          String           @id @default(uuid()) @db.Uuid
+  quotationId String           @map("quotation_id") @db.Uuid
+  fromStatus  QuotationStatus? @map("from_status")
+  toStatus    QuotationStatus  @map("to_status")
+  actorUserId String?          @map("actor_user_id") @db.Uuid
+  reason      String?          @db.VarChar(500)
+  createdAt   DateTime         @default(now()) @map("created_at")
+
+  quotation LoanQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+
+  @@index([quotationId, createdAt])
+  @@map("quotation_status_history")
+}
+
+// ── Applicant & addresses ───────────────────────────────────────────────────
+
+model Applicant {
+  id          String   @id @default(uuid()) @db.Uuid
+  quotationId String   @unique @map("quotation_id") @db.Uuid
+
+  titleCode   String?  @map("title_code") @db.VarChar(10)
+  titleName   String?  @map("title_name") @db.VarChar(50)
+  firstName   String   @map("first_name") @db.VarChar(100)
+  lastName    String   @map("last_name") @db.VarChar(100)
+  nickname    String?  @db.VarChar(50)
+  birthDate   DateTime? @map("birth_date") @db.Date
+  phoneNumber String   @map("phone_number") @db.VarChar(30)
+  maritalStatus String? @map("marital_status") @db.VarChar(20)
+  nationalityCode String? @map("nationality_code") @db.VarChar(10)
+
+  identityType    IdentityType @default(CITIZEN_ID) @map("identity_type")
+  /// Legacy CIZ_IDENTITY_CODE (type of identity evidence).
+  identityCode    String?      @map("identity_code") @db.VarChar(10)
+  /// SENSITIVE (PDPA). Encrypt at application level before production.
+  idCardNumber    String?      @map("id_card_number") @db.VarChar(255)
+  passportNo      String?      @map("passport_no") @db.VarChar(50)
+  idCardIssuedAt  DateTime?    @map("id_card_issued_at") @db.Date
+  idCardExpiresAt DateTime?    @map("id_card_expires_at") @db.Date
+
+  // Housing (legacy CIZ_HOUSE_TYPE, CIZ_HOUSE_OWNER_TYPE, CIZ_STAYED_*)
+  houseType      String? @map("house_type") @db.VarChar(20)
+  houseOwnerType String? @map("house_owner_type") @db.VarChar(20)
+  stayedYears    Int?    @map("stayed_years")
+  stayedMonths   Int?    @map("stayed_months")
+
+  quotation LoanQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+
+  @@index([idCardNumber])
+  @@map("applicants")
+}
+
+model Address {
+  id           String  @id @default(uuid()) @db.Uuid
+  houseNo      String? @map("house_no") @db.VarChar(50)
+  moo          String? @db.VarChar(20)
+  buildingName String? @map("building_name") @db.VarChar(200)
+  roomNo       String? @map("room_no") @db.VarChar(30)
+  floor        String? @db.VarChar(30)
+  soi          String? @db.VarChar(100)
+  road         String? @db.VarChar(100)
+  subDistrict  String? @map("sub_district") @db.VarChar(100)
+  district     String? @db.VarChar(100)
+  provinceCode String? @map("province_code") @db.VarChar(3)
+  provinceName String? @map("province_name") @db.VarChar(100)
+  postalCode   String? @map("postal_code") @db.VarChar(5)
+  /// Legacy LOCATION_CODE (reference to the postal-code master).
+  locationCode String? @map("location_code") @db.VarChar(20)
+
+  quotationLinks QuotationAddress[]
+  persons        QuotationPerson[]
+
+  @@map("addresses")
+}
+
+model QuotationAddress {
+  id          String      @id @default(uuid()) @db.Uuid
+  quotationId String      @map("quotation_id") @db.Uuid
+  kind        AddressKind
+  addressId   String      @unique @map("address_id") @db.Uuid
+
+  quotation LoanQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  address   Address       @relation(fields: [addressId], references: [id])
+
+  @@unique([quotationId, kind])
+  @@map("quotation_addresses")
+}
+
+// ── Work information (legacy MPLS_CAREER) ───────────────────────────────────
+
+model Occupation {
+  id          String         @id @default(uuid()) @db.Uuid
+  quotationId String         @map("quotation_id") @db.Uuid
+  kind        OccupationKind
+
+  careerCode      String? @map("career_code") @db.VarChar(20)
+  careerName      String? @map("career_name") @db.VarChar(200)
+  workplaceName   String? @map("workplace_name") @db.VarChar(200)
+  position        String? @db.VarChar(150)
+  department      String? @db.VarChar(200)
+  experienceYears  Int?   @map("experience_years")
+  experienceMonths Int?   @map("experience_months")
+  salaryPerMonth  Decimal? @map("salary_per_month") @db.Decimal(14, 2)
+  salaryPerDay    Decimal? @map("salary_per_day") @db.Decimal(14, 2)
+  leaderName      String? @map("leader_name") @db.VarChar(200)
+  workDaysPerWeek Int?    @map("work_days_per_week")
+  workplacePhone1 String? @map("workplace_phone_1") @db.VarChar(30)
+  workplacePhone2 String? @map("workplace_phone_2") @db.VarChar(30)
+
+  quotation LoanQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+
+  @@unique([quotationId, kind])
+  @@map("occupations")
+}
+
+model BankAccount {
+  id          String @id @default(uuid()) @db.Uuid
+  quotationId String @unique @map("quotation_id") @db.Uuid
+  bankCode    String? @map("bank_code") @db.VarChar(10)
+  bankName    String? @map("bank_name") @db.VarChar(100)
+  branchName  String? @map("branch_name") @db.VarChar(100)
+  /// SENSITIVE. Encrypt at application level before production.
+  accountNo   String? @map("account_no") @db.VarChar(255)
+
+  quotation LoanQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+
+  @@map("bank_accounts")
+}
+
+// ── Loan / product information (legacy MPLS_CREDIT + purpose table) ─────────
+
+/// Fields common to every product.
+model LoanRequest {
+  id          String @id @default(uuid()) @db.Uuid
+  quotationId String @unique @map("quotation_id") @db.Uuid
+
+  productValue    Decimal? @map("product_value") @db.Decimal(14, 2) // legacy PRODUCT_VALUE
+  downPayment     Decimal? @map("down_payment") @db.Decimal(14, 2)
+  loanAmount      Decimal  @map("loan_amount") @db.Decimal(14, 2)
+  termMonths      Int      @map("term_months") // legacy PAYMENT_ROUND_COUNT
+  interestRate    Decimal? @map("interest_rate") @db.Decimal(7, 4)
+  installmentAmount Decimal? @map("installment_amount") @db.Decimal(14, 2) // legacy PAYMENT_VALUE
+  /// Snapshot of pricing inputs/outputs used to produce the figures above.
+  pricingSnapshot Json?    @map("pricing_snapshot")
+
+  // Purpose of loan / purchase (legacy PURPOSE_OF_BUY*, REASON_OF_BUY*)
+  purposeCode  String? @map("purpose_code") @db.VarChar(10)
+  purposeName  String? @map("purpose_name") @db.VarChar(1000)
+  purposeOther String? @map("purpose_other") @db.VarChar(200)
+  reasonCode   String? @map("reason_code") @db.VarChar(10)
+  reasonName   String? @map("reason_name") @db.VarChar(1000)
+
+  quotation LoanQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+
+  @@map("loan_requests")
+}
+
+/// Motorcycle-loan only.
+model VehicleDetail {
+  id          String @id @default(uuid()) @db.Uuid
+  quotationId String @unique @map("quotation_id") @db.Uuid
+
+  brandCode   String? @map("brand_code") @db.VarChar(20)
+  brandName   String? @map("brand_name") @db.VarChar(100)
+  modelCode   String? @map("model_code") @db.VarChar(30)
+  modelName   String? @map("model_name") @db.VarChar(200)
+  modelDescription String? @map("model_description") @db.VarChar(500)
+  modelYear   Int?    @map("model_year")
+  sizeModel   String? @map("size_model") @db.VarChar(30)
+  colorCode   String? @map("color_code") @db.VarChar(20)
+  colorName   String? @map("color_name") @db.VarChar(100)
+  engineCc    Int?    @map("engine_cc")
+  fuelType    String? @map("fuel_type") @db.VarChar(30)
+  factoryPrice Decimal? @map("factory_price") @db.Decimal(14, 2)
+
+  // Used vehicle (legacy REG_*, GRADE, CONTRACT_REF) — refinance / used bike
+  grade        String?   @db.VarChar(10)
+  regNo        String?   @map("reg_no") @db.VarChar(30)
+  regDate      DateTime? @map("reg_date") @db.Date
+  regProvinceCode String? @map("reg_province_code") @db.VarChar(3)
+  regProvinceName String? @map("reg_province_name") @db.VarChar(100)
+  mileage      Int?
+  oldContractRef String? @map("old_contract_ref") @db.VarChar(30)
+  lastApprovedAt DateTime? @map("last_approved_at") @db.Date
+
+  // Electric vehicle
+  motorNumber     String? @map("motor_number") @db.VarChar(50)
+  motorPower      String? @map("motor_power") @db.VarChar(50)
+  batteryType     String? @map("battery_type") @db.VarChar(50)
+  batteryCapacity String? @map("battery_capacity") @db.VarChar(50)
+
+  // LTV exception
+  isOverMaxLtv     Boolean @default(false) @map("is_over_max_ltv")
+  overMaxLtvReason String? @map("over_max_ltv_reason") @db.VarChar(500)
+
+  quotation LoanQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+
+  @@map("vehicle_details")
+}
+
+model QuotationInsurance {
+  id          String  @id @default(uuid()) @db.Uuid
+  quotationId String  @unique @map("quotation_id") @db.Uuid
+  code        String? @db.VarChar(20)
+  name        String? @db.VarChar(200)
+  years       Int?
+  planPrice   Decimal? @map("plan_price") @db.Decimal(14, 2)
+  /// Legacy IS_INCLUDE_LOANAMOUNT.
+  includedInLoan Boolean @default(false) @map("included_in_loan")
+
+  quotation LoanQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+
+  @@map("quotation_insurances")
+}
+
+/// Vehicle user and referral persons (legacy CAR_USER_*, FIRST/SECOND_REFERRAL_*).
+model QuotationPerson {
+  id          String     @id @default(uuid()) @db.Uuid
+  quotationId String     @map("quotation_id") @db.Uuid
+  role        PersonRole
+
+  fullName    String?  @map("full_name") @db.VarChar(300)
+  relation    String?  @db.VarChar(200)
+  phoneNumber String?  @map("phone_number") @db.VarChar(50)
+  /// SENSITIVE; only used for VEHICLE_USER. Encrypt before production.
+  citizenId   String?  @map("citizen_id") @db.VarChar(255)
+  /// Legacy CAR_USER / CAR_USER_NAME code (who uses the vehicle).
+  userTypeCode String? @map("user_type_code") @db.VarChar(10)
+  userTypeName String? @map("user_type_name") @db.VarChar(200)
+  addressId   String?  @unique @map("address_id") @db.Uuid
+
+  quotation LoanQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  address   Address?      @relation(fields: [addressId], references: [id])
+
+  @@unique([quotationId, role])
+  @@map("quotation_persons")
+}
+
+// ── Documents (files live on server storage, never in the DB) ───────────────
+
+model QuotationDocument {
+  id               String         @id @default(uuid()) @db.Uuid
+  quotationId      String         @map("quotation_id") @db.Uuid
+  documentTypeCode String         @map("document_type_code") @db.VarChar(20)
+  status           DocumentStatus @default(ACTIVE)
+
+  originalName String @map("original_name") @db.VarChar(255)
+  contentType  String @map("content_type") @db.VarChar(100)
+  sizeBytes    Int    @map("size_bytes")
+  /// Integrity check, also useful for de-duplication.
+  sha256       String @db.VarChar(64)
+
+  /// Which backend holds the file ("local", later "s3", ...).
+  storageProvider String @default("local") @map("storage_provider") @db.VarChar(20)
+  /// Opaque, server-generated key. Never derived from user input.
+  storageKey      String @unique @map("storage_key") @db.VarChar(500)
+  scanStatus      ScanStatus @default(PENDING) @map("scan_status")
+
+  uploadedBy  String    @map("uploaded_by") @db.Uuid
+  uploadedAt  DateTime  @default(now()) @map("uploaded_at")
+  cancelledBy String?   @map("cancelled_by") @db.Uuid
+  cancelledAt DateTime? @map("cancelled_at")
+
+  quotation    LoanQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  documentType DocumentType  @relation(fields: [documentTypeCode], references: [code])
+
+  @@index([quotationId, documentTypeCode, status])
+  @@map("quotation_documents")
+}
+
+// ── Consent ─────────────────────────────────────────────────────────────────
+
+model ConsentRecord {
+  id          String   @id @default(uuid()) @db.Uuid
+  quotationId String   @map("quotation_id") @db.Uuid
+  consentCode String   @map("consent_code") @db.VarChar(60)
+  consentVersion String @map("consent_version") @db.VarChar(30)
+  /// true/false for checkbox consents; for service consents a code
+  /// (legacy E_PAPER_CONSENT_VALUE: 1 sign-up e-contract, 2 change email, 3 cancel e-bill).
+  accepted    Boolean
+  value       String?  @db.VarChar(20)
+  acceptedAt  DateTime? @map("accepted_at")
+  ipAddress   String?  @map("ip_address") @db.VarChar(64)
+  /// User who recorded it (customer, or staff for checklist consents).
+  recordedBy  String?  @map("recorded_by") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  quotation  LoanQuotation     @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  definition ConsentDefinition @relation(fields: [consentCode, consentVersion], references: [code, version])
+
+  @@unique([quotationId, consentCode])
+  @@map("consent_records")
+}
+
+/// Legacy VERIFY_STATUS / VERIFY_BY / VERIFY_DATETIME (signature image check).
+model SignatureVerification {
+  id          String    @id @default(uuid()) @db.Uuid
+  quotationId String    @unique @map("quotation_id") @db.Uuid
+  verified    Boolean   @default(false)
+  verifiedBy  String?   @map("verified_by") @db.Uuid
+  verifiedAt  DateTime? @map("verified_at")
+
+  quotation LoanQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+
+  @@map("signature_verifications")
+}
+
+/// Legacy FACE_RECOG_API_ID + QUO_CONSENT_FACE_COMPARE*.
+model FaceVerification {
+  id          String   @id @default(uuid()) @db.Uuid
+  quotationId String   @map("quotation_id") @db.Uuid
+  provider    String   @db.VarChar(50)
+  externalRef String?  @map("external_ref") @db.VarChar(100)
+  passed      Boolean?
+  score       Decimal? @db.Decimal(6, 3)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  quotation LoanQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+
+  @@index([quotationId])
+  @@map("face_verifications")
+}
+
+// ── Integration ─────────────────────────────────────────────────────────────
+
+/// Transactional outbox: written in the same DB transaction as the change,
+/// published by a relay (in-process today, message broker after extraction).
+model OutboxEvent {
+  id            String    @id @default(uuid()) @db.Uuid
+  aggregateType String    @map("aggregate_type") @db.VarChar(50)
+  aggregateId   String    @map("aggregate_id") @db.Uuid
+  eventType     String    @map("event_type") @db.VarChar(100)
+  payload       Json
+  createdAt     DateTime  @default(now()) @map("created_at")
+  processedAt   DateTime? @map("processed_at")
+
+  @@index([processedAt, createdAt])
+  @@map("outbox_events")
+}

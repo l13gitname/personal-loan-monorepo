@@ -1,0 +1,61 @@
+name: Flutter - Firebase App Distribution (Android)
+
+# Run manually, or push a tag such as `app-v0.2.0`.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment (selects the API URL secret)
+        type: choice
+        options: [staging, production]
+        default: staging
+      groups:
+        description: Firebase tester groups (comma separated)
+        default: internal-testers
+  push:
+    tags: ['app-v*']
+
+jobs:
+  distribute:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/consumer_app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Test before shipping
+        run: flutter test
+
+      # Requires the `android/` folder (run `flutter create .` once and commit it)
+      # and a release keystore: see README "Signing". Without signing config
+      # the APK is signed with the debug key, which is fine for internal testers only.
+      - name: Build APK
+        run: |
+          flutter build apk --release \
+            --dart-define=API_BASE_URL=${{ inputs.environment == 'production' && secrets.API_BASE_URL_PRODUCTION || secrets.API_BASE_URL_STAGING }} \
+            --build-number=${{ github.run_number }}
+
+      - name: Upload to Firebase App Distribution
+        uses: wzieba/Firebase-Distribution-Github-Action@v1
+        with:
+          appId: ${{ secrets.FIREBASE_ANDROID_APP_ID }}
+          serviceCredentialsFileContent: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          groups: ${{ inputs.groups || 'internal-testers' }}
+          file: apps/consumer_app/build/app/outputs/flutter-apk/app-release.apk
+          releaseNotes: |
+            Build ${{ github.run_number }} from ${{ github.ref_name }} (${{ github.sha }})
