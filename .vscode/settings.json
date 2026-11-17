@@ -1,0 +1,14 @@
+{
+  "editor.formatOnSave": true,
+  "[dart]": {
+    "editor.defaultFormatter": "Dart-Code.dart-code",
+    "editor.rulers": [80]
+  },
+  "[typescript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+  "[prisma]": { "editor.defaultFormatter": "Prisma.prisma" },
+  "files.exclude": {
+    "**/*.g.dart": true,
+    "**/*.freezed.dart": true
+  },
+  "dart.lineLength": 80
+}

@@ -161,6 +161,15 @@ API docs (Swagger UI) are served by the backend at `http://localhost:3000/api/do
 CI: `.github/workflows/` contains backend CI (Postgres service container), Flutter CI,
 and Firebase App Distribution. `scripts/check-flutter.sh|.ps1` runs the same Flutter checks locally.
 
+## Editor setup (VS Code)
+
+Open the repo root in VS Code and accept **"Install recommended extensions"**.
+The list lives in `.vscode/extensions.json` (Dart/Flutter, Prisma, ESLint/Prettier,
+Docker, database client, Thunder Client, GitLens, GitHub Actions, ...) and shared
+editor settings in `.vscode/settings.json`. Use Android Studio only for the emulator
+and SDK Manager. When working on the Flutter app, opening `apps/consumer_app` as its
+own workspace folder makes the Dart extension find the project more reliably.
+
 ## 6. Database workflow
 
 The Prisma schema is the source of truth for application database structure.
