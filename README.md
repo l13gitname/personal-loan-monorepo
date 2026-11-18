@@ -1,65 +1,143 @@
-# Personal Loan Platform — Monorepo Starter
+<div align="center">
 
-Starter repository for a Flutter personal-loan quotation application with a NestJS modular-monolith backend and PostgreSQL.
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0ea5e9,100:6366f1&height=200&section=header&text=Personal%20Loan%20Monorepo&fontSize=48&fontColor=ffffff&animation=fadeIn&fontAlignY=38&desc=Quotation%20app%20starter%20%E2%80%A2%20Flutter%20%2B%20NestJS%20%2B%20PostgreSQL&descAlignY=60&descSize=18" alt="Personal Loan Monorepo banner" />
 
-The structure is intentionally a **modular monolith**: one deployable API, with domain boundaries that can be extracted into independent services later. It does not introduce distributed-system complexity before the team needs it.
+<a href="https://git.io/typing-svg">
+  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=20&pause=1000&color=6366F1&center=true&vCenter=true&width=620&lines=%F0%9F%92%B8+Personal+loan+quotations%2C+made+simple;%F0%9F%93%B1+Flutter+consumer+app;%F0%9F%9B%A0%EF%B8%8F+NestJS+modular+monolith+API;%F0%9F%90%98+PostgreSQL+%2B+Prisma;%F0%9F%90%B3+One+command+to+spin+up+the+database" alt="Typing animation" />
+</a>
 
-## 1. Repository layout
+<br/>
+
+![Flutter](https://img.shields.io/badge/Flutter-02569B?style=for-the-badge&logo=flutter&logoColor=white)
+![NestJS](https://img.shields.io/badge/NestJS-E0234E?style=for-the-badge&logo=nestjs&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)
+![Prisma](https://img.shields.io/badge/Prisma-2D3748?style=for-the-badge&logo=prisma&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
+![Swagger](https://img.shields.io/badge/Swagger-85EA2D?style=for-the-badge&logo=swagger&logoColor=black)
+![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white)
+
+</div>
+
+---
+
+> [!WARNING]
+> 🚧 **This is a starter, not a production system.** It is **not ready** to handle real customer or financial data. See [Before going to production](#-before-going-to-production) for what's still missing.
+
+## 📖 Table of Contents
+
+- [✨ What is this?](#-what-is-this)
+- [🏗️ Architecture](#️-architecture)
+- [🧰 Tech Stack](#-tech-stack)
+- [📂 Project Structure](#-project-structure)
+- [🚀 Quick Start](#-quick-start)
+- [⚙️ Configuration](#️-configuration)
+- [🧪 Scripts & Commands](#-scripts--commands)
+- [🔌 API Overview](#-api-overview)
+- [🛡️ Before going to production](#️-before-going-to-production)
+- [🗺️ Roadmap](#️-roadmap)
+
+---
+
+## ✨ What is this?
+
+A monorepo starter for a **personal-loan quotation app** 💸. A customer fills in a loan request on a mobile app, and the backend stores it as a **draft quotation** that can be updated, submitted or cancelled.
+
+| 📱 Consumer app | 🛠️ Backend API | 🐘 Database |
+|:---:|:---:|:---:|
+| Flutter | NestJS (TypeScript) | PostgreSQL + Prisma |
+| Quotation journey for customers | JWT auth with refresh-token rotation | Dockerized, persisted in a named volume |
+
+**Highlights**
+
+- 🧩 **Modular monolith**: one deployable API with clear domain modules (`auth`, `users`, `quotations`) that can be split into services later
+- 🔐 **Secure-by-default auth**: JWT access tokens plus rotating refresh tokens
+- 📚 **Swagger UI** for exploring the API
+- 🤖 **CI ready**: GitHub Actions for backend, Flutter and Firebase App Distribution
+- 🧑‍💻 **Dev-friendly**: shared VS Code settings and recommended extensions
+
+---
+
+## 🏗️ Architecture
+
+```mermaid
+flowchart LR
+    A["📱 Flutter<br/>Consumer App"] -->|"REST /api/v1"| B
+
+    subgraph B["🛠️ NestJS API (modular monolith)"]
+        direction TB
+        B1["🔐 auth"]
+        B2["👤 users"]
+        B3["📝 quotations"]
+    end
+
+    B -->|"Prisma"| C[("🐘 PostgreSQL<br/>Docker")]
+    B -.->|"docs"| D["📚 Swagger UI<br/>/api/docs"]
+```
+
+---
+
+## 🧰 Tech Stack
+
+| Layer | Technology |
+|---|---|
+| 📱 **Frontend** | Flutter |
+| 🛠️ **Backend** | NestJS (TypeScript), JWT auth with refresh-token rotation |
+| 🐘 **Database** | PostgreSQL, managed with Prisma |
+| 🐳 **Infrastructure** | Docker Compose with a named volume for persistence |
+| 📚 **API docs** | Swagger UI |
+| 🤖 **CI/CD** | GitHub Actions (backend CI with Postgres service container, Flutter CI, Firebase App Distribution) |
+| 🧑‍💻 **Tooling** | VS Code with recommended extensions and shared settings |
+
+---
+
+## 📂 Project Structure
 
 ```text
 personal-loan-monorepo/
-├── apps/
-│   └── consumer_app/             # Flutter consumer application
-├── backend/
-│   ├── prisma/
-│   │   ├── schema.prisma         # Database model source of truth
-│   │   └── seed.ts               # Safe development seed
+├── 🤖 .github/workflows/     # CI pipelines
+├── 🧑‍💻 .vscode/              # Recommended extensions & settings
+├── 📱 apps/
+│   └── consumer_app/         # Flutter application
+├── 🛠️ backend/                # NestJS API
+│   ├── prisma/               # Schema, migrations, seed
 │   └── src/
-│       ├── infrastructure/
-│       │   └── database/         # Prisma connection boundary
-│       └── modules/
-│           ├── auth/             # Register/login/logout
-│           ├── users/            # Current user
-│           └── quotations/       # Loan quotation application
-├── database/
-│   └── README.md                 # Database initialization guide
-├── docker-compose.yml
+│       ├── auth/             # 🔐 Authentication
+│       ├── users/            # 👤 Users
+│       ├── quotations/       # 📝 Quotations
+│       └── infrastructure/
+│           └── database/     # 🐘 Prisma connection
+├── 🐘 database/              # Database initialization guide
+├── 📚 docs/                  # Documentation (incl. legacy mapping doc)
+├── 🧰 scripts/               # Flutter check scripts (.sh / .ps1)
 ├── .env.example
-└── .gitignore
+├── docker-compose.yml
+└── README.md
 ```
 
-## 2. Prerequisites
+---
 
-- Docker Desktop (or Docker Engine + Compose)
-- Node.js 20 or newer and npm
-- Flutter stable SDK
-- Android Studio for Android development
-- Xcode on macOS for iOS development
+## 🚀 Quick Start
 
-## 3. Start PostgreSQL
+You'll bring up three things: the **database**, the **backend**, then the **Flutter app**.
 
-From the repository root:
+### 1️⃣ Start PostgreSQL 🐘
+
+From the **repo root**:
 
 ```bash
 cp .env.example .env
 docker compose up -d postgres
-docker compose ps
+docker compose ps        # check it's healthy
 ```
 
-Windows PowerShell equivalent for the first command:
+> PostgreSQL will be available on `localhost:5432`.
 
-```powershell
-Copy-Item .env.example .env
-```
+### 2️⃣ Start the backend 🛠️
 
-PostgreSQL is exposed on `localhost:5432`. The database is persisted in a Docker named volume.
-
-> The credentials in `.env.example` are for local development only. Change them for every shared or production environment. Never commit `.env`.
-
-## 4. Start the backend
+From `backend/`:
 
 ```bash
-cd backend
 cp .env.example .env
 npm install
 npm run prisma:generate
@@ -68,195 +146,125 @@ npm run db:seed
 npm run start:dev
 ```
 
-On Windows PowerShell, use `Copy-Item .env.example .env` instead of `cp`.
+| What | Where |
+|---|---|
+| 🌐 API | `http://localhost:3000/api/v1` |
+| 📚 Swagger UI | `http://localhost:3000/api/docs` |
 
-The API listens on `http://localhost:3000/api/v1`.
+> [!NOTE]
+> Swagger is disabled in production unless you set `SWAGGER_ENABLED=true`.
 
-Useful endpoints:
+### 3️⃣ Start the Flutter app 📱
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | `/api/v1/health` | Health check |
-| POST | `/api/v1/auth/register` | Create a user |
-| POST | `/api/v1/auth/login` | Login and create a session |
-| POST | `/api/v1/auth/refresh` | Rotate refresh token and issue a new access token |
-| POST | `/api/v1/auth/logout` | Revoke current session |
-| GET | `/api/v1/users/me` | Get current user (Bearer token) |
-| GET | `/api/v1/products` | List active products |
-| GET | `/api/v1/products/:code` | Product + required documents and consents |
-| POST | `/api/v1/quotations` | Create a draft for a product (`productCode`), sections optional |
-| GET | `/api/v1/quotations` | List current user's quotations |
-| GET | `/api/v1/quotations/:id` | Full quotation with status history |
-| PATCH | `/api/v1/quotations/:id` | Save one or more sections of a draft |
-| POST | `/api/v1/quotations/:id/submit` | Validate (common + product rules + documents + consents) and submit |
-| POST | `/api/v1/quotations/:id/cancel` | Cancel |
-| POST | `/api/v1/quotations/:id/documents` | Upload (multipart: `file`, `documentTypeCode`) to server storage |
-| GET | `/api/v1/quotations/:id/documents` | List documents |
-| GET | `/api/v1/quotations/:id/documents/:docId/download` | Download |
-| DELETE | `/api/v1/quotations/:id/documents/:docId` | Cancel a document |
-
-> The quotation request shape changed: see `docs/legacy-mapping.md` and `backend/src/modules/quotations/dto/quotation.dto.ts`. The example payload below predates it; sections are now `applicant`, `addresses`, `occupations`, `loanRequest`, `vehicle` (motorcycle only), `persons`, `consents`.
-
-Example registration:
-
-```json
-{
-  "email": "demo@example.com",
-  "password": "ChangeMe123!",
-  "firstName": "Demo",
-  "lastName": "User"
-}
-```
-
-Example quotation request (all values are illustrative):
-
-```json
-{
-  "personalInformation": {
-    "firstName": "Demo",
-    "lastName": "User",
-    "phoneNumber": "0800000000",
-    "dateOfBirth": "1994-01-01",
-    "nationality": "TH"
-  },
-  "productInformation": {
-    "productCode": "PERSONAL_LOAN",
-    "requestedAmount": 50000,
-    "requestedTermMonths": 24
-  },
-  "workInformation": {
-    "employmentType": "SALARIED",
-    "companyName": "Example Company",
-    "monthlyIncome": 30000
-  },
-  "documents": [],
-  "consents": [
-    {
-      "consentType": "PRIVACY_NOTICE",
-      "version": "1.0",
-      "accepted": true
-    }
-  ]
-}
-```
-
-The API currently creates a draft record. It does not perform credit scoring, eligibility decisions, loan approval, or a real loan disbursement.
-
-## 5. Start the Flutter app
-
-See `apps/consumer_app/README.md` (first-run steps, structure, tests, CI/CD).
-Quick version, after `flutter create` has generated the platform folders:
+From `apps/consumer_app/`:
 
 ```bash
-cd apps/consumer_app
 flutter pub get
 dart run build_runner build --delete-conflicting-outputs
 cp env/dev.example.json env/dev.json
 flutter run --dart-define-from-file=env/dev.json
 ```
 
-API docs (Swagger UI) are served by the backend at `http://localhost:3000/api/docs`
-(disabled in production unless `SWAGGER_ENABLED=true`).
+> [!TIP]
+> If the platform folders (`android/`, `ios/`, ...) are missing, generate them first with `flutter create .`
 
-CI: `.github/workflows/` contains backend CI (Postgres service container), Flutter CI,
-and Firebase App Distribution. `scripts/check-flutter.sh|.ps1` runs the same Flutter checks locally.
+---
 
-## Editor setup (VS Code)
+## ⚙️ Configuration
 
-Open the repo root in VS Code and accept **"Install recommended extensions"**.
-The list lives in `.vscode/extensions.json` (Dart/Flutter, Prisma, ESLint/Prettier,
-Docker, database client, Thunder Client, GitLens, GitHub Actions, ...) and shared
-editor settings in `.vscode/settings.json`. Use Android Studio only for the emulator
-and SDK Manager. When working on the Flutter app, opening `apps/consumer_app` as its
-own workspace folder makes the Dart extension find the project more reliably.
+Backend variables live in `backend/.env`:
 
-## 6. Database workflow
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | 🐘 PostgreSQL connection string |
+| `JWT_ACCESS_SECRET` | 🔑 Secret used to sign access tokens |
+| `JWT_ACCESS_TTL` | ⏱️ Access token lifetime |
+| `PORT` | 🔌 Port the API listens on |
+| `CORS_ORIGIN` | 🌍 Allowed browser origin(s) |
 
-The Prisma schema is the source of truth for application database structure.
+> [!CAUTION]
+> 🔒 Never commit real credentials. Use a **secret manager** in production.
 
-After changing `backend/prisma/schema.prisma`:
+---
 
-```bash
-cd backend
-npm run db:migrate
-```
+## 🧪 Scripts & Commands
 
-On first initialization this creates an `init` migration under `backend/prisma/migrations/` and applies it to the local database. For later schema changes, run `npx prisma migrate dev --name describe_your_change` from `backend/`. Commit every generated migration folder to Git.
+| Command | What it does |
+|---|---|
+| `npm run db:migrate` | ▶️ Apply migrations locally (creates the `init` migration on first run) |
+| `npm run db:seed` | 🌱 Load safe development seed data |
+| `npm run db:reset` | 💥 **Deletes all local database data.** Never run against production |
+| `npm run db:deploy` | 🚢 Apply committed migrations (production) |
+| `scripts/check-flutter.sh` / `.ps1` | ✅ Run the same Flutter checks locally as CI |
 
-For a clean local database only:
+> [!IMPORTANT]
+> Don't use `prisma db push` for production deployments. Use `db:deploy` with committed migrations.
 
-```bash
-npm run db:reset
-```
+---
 
-**Warning:** `db:reset` deletes local database data. Never run it against production.
+## 🔌 API Overview
 
-For production deployment, apply committed migrations with:
+All routes are under `/api/v1`. Open **Swagger UI** for the full, interactive reference. 📚
 
-```bash
-npm run db:deploy
-```
+| Area | Endpoints |
+|---|---|
+| 💚 **Health** | `GET /health` |
+| 🔐 **Auth** | register, login, refresh, logout |
+| 👤 **Users** | `GET /users/me` |
+| 🏷️ **Products** | list active products, get a product by code |
+| 📝 **Quotations** | create, list, get, update sections, submit, cancel |
+| 📎 **Documents** | upload, list, download, cancel |
 
-Do not use `prisma db push` as the production schema deployment process. Commit migration files to Git and review them before deployment.
+<details>
+<summary>📦 <b>Quotation request sections</b> (click to expand)</summary>
 
-## 7. Environment variables
+<br/>
 
-Backend configuration is read from `backend/.env`. See `backend/.env.example`.
+The quotation request shape has changed, and any old example payload is outdated. The current sections are:
 
-- `DATABASE_URL`: PostgreSQL connection string
-- `JWT_ACCESS_SECRET`: signing key for short-lived access tokens
-- `JWT_ACCESS_TTL`: access token lifetime
-- `PORT`: API port
-- `CORS_ORIGIN`: allowed frontend origins
+- 🙋 `applicant`
+- 🏠 `addresses`
+- 💼 `occupations`
+- 💰 `loanRequest`
+- 🚗 `vehicle`
+- 👥 `persons`
+- ✅ `consents`
 
-Use a secret manager for production secrets. Do not store production credentials in GitHub source code or Docker Compose files.
+</details>
 
-## 8. Architecture rules
+---
 
-1. Keep one NestJS API deployment initially.
-2. Each business domain owns its module, DTOs, services, and persistence operations.
-3. Other modules must not query another domain's tables directly.
-4. Keep database access behind `infrastructure/database` and domain repositories/services.
-5. Use asynchronous jobs/events for slow work such as document processing and notifications.
-6. Store uploaded files in object storage; PostgreSQL should store metadata and object keys only.
-7. Add correlation IDs, structured logs, metrics, and tracing before scaling out.
-8. Extract a service only when independent deployment, scaling, ownership, or isolation provides measurable value.
+## 🛡️ Before going to production
 
-## 9. Security and production work still required
+The API currently **only creates draft quotations**. It does **not** do credit scoring, eligibility checks, approvals or disbursements.
 
-This starter is not production-ready for a financial application. Before handling real customer data:
+Before handling real customer data, you'll need at least:
 
-- Add email/phone verification, password reset, brute-force protection, rate limiting, and MFA policy.
-- The starter rotates refresh tokens and stores only their SHA-256 hashes. Before production, add refresh-token reuse detection that revokes the full token family, device/session management, and security review.
-- Use HTTPS everywhere and secure secret management.
-- Add authorization policies and audit logs.
-- Add consent text/version management, proof of acceptance, retention, and withdrawal handling.
-- Add secure document upload using signed object-storage URLs, malware scanning, file type/size validation, and encryption.
-- Define PDPA/privacy notice, retention, deletion, access-control, and incident-response processes.
-- Add automated unit, integration, API contract, and load tests.
-- Review database indexes, connection pooling, backups, restore drills, and disaster recovery.
-- Have the security and legal teams review the complete lending journey.
+- [ ] 🪪 Identity verification
+- [ ] 🚦 Rate limiting
+- [ ] 🔐 Multi-factor authentication (MFA)
+- [ ] 🧾 Audit logs
+- [ ] 🗄️ Secure document storage
+- [ ] 📜 Consent management
+- [ ] ⚖️ Security and legal review
 
-## 10. GitHub initialization
+---
 
-Create an empty repository on GitHub, then from this directory:
+## 🗺️ Roadmap
 
-```bash
-git init
-git add .
-git commit -m "chore: initialize personal loan platform monorepo"
-git branch -M main
-git remote add origin https://github.com/ORG/REPOSITORY.git
-git push -u origin main
-```
+- [ ] 🔐 Finish authentication and authorization
+- [ ] ✏️ Add draft update and submit endpoints
+- [ ] 🏷️ Add product configuration APIs
+- [ ] ☁️ Integrate object storage for documents
+- [ ] 📜 Add consent versioning
+- [ ] 🤖 Set up CI checks and a staging environment
 
-Replace `ORG/REPOSITORY` with your actual GitHub organization and repository.
+---
 
-## 11. Suggested next milestones
+<div align="center">
 
-1. Complete auth/session lifecycle and authorization.
-2. Add quotation draft update and submit endpoints.
-3. Add master-data/product configuration APIs.
-4. Integrate secure document upload to object storage.
-5. Add consent versioning and audit trail.
-6. Add CI checks, automated tests, staging deployment, and load testing.
+**Built with ☕ and 💙**
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:6366f1,100:0ea5e9&height=100&section=footer" alt="footer wave" />
+
+</div>
